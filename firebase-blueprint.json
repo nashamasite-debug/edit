@@ -1,0 +1,253 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and credit balance for AI Text Editor Studio",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "credits": {
+          "type": "integer",
+          "description": "Available AI editing credits"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["uid", "displayName", "credits", "createdAt", "updatedAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Image text editing project container",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the project owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Project title",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "mode": {
+          "type": "string",
+          "description": "Editing mode (single or batch)",
+          "enum": ["single", "batch"]
+        },
+        "currentVersionId": {
+          "type": "string",
+          "description": "ID of the active version",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Project creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["ownerId", "name", "mode", "currentVersionId", "createdAt", "updatedAt"]
+    },
+    "Version": {
+      "title": "Version",
+      "description": "Immutable snapshot of an image version for undo/redo and before/after comparison",
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "description": "Parent project ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the version owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Image URL or Data URI reference",
+          "minLength": 1,
+          "maxLength": 500000
+        },
+        "parentId": {
+          "type": "string",
+          "description": "Previous version ID or root",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "promptUsed": {
+          "type": "string",
+          "description": "AI editing prompt used to produce this version",
+          "minLength": 0,
+          "maxLength": 4000
+        },
+        "modelUsed": {
+          "type": "string",
+          "description": "AI model identifier",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Version creation timestamp"
+        }
+      },
+      "required": ["projectId", "ownerId", "imageUrl", "parentId", "promptUsed", "modelUsed", "createdAt"]
+    },
+    "Job": {
+      "title": "Job",
+      "description": "Asynchronous AI text detection or image editing task",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the job owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Associated project ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "description": "Execution status of the job",
+          "enum": ["queued", "processing", "completed", "failed"]
+        },
+        "type": {
+          "type": "string",
+          "description": "Type of AI operation",
+          "enum": ["detect", "edit", "magic_erase", "upscale", "editable"]
+        },
+        "cost": {
+          "type": "integer",
+          "description": "Credits charged for this job"
+        },
+        "model": {
+          "type": "string",
+          "description": "Selected AI model",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Constructed instruction prompt",
+          "minLength": 0,
+          "maxLength": 4000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Job creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Job update timestamp"
+        }
+      },
+      "required": ["ownerId", "projectId", "status", "type", "cost", "model", "prompt", "createdAt", "updatedAt"]
+    },
+    "CreditTransaction": {
+      "title": "CreditTransaction",
+      "description": "Immutable ledger entry for credit deductions, refunds, and purchases",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the user",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "amount": {
+          "type": "integer",
+          "description": "Signed credit change (+ for purchase/refund, - for deduction)"
+        },
+        "type": {
+          "type": "string",
+          "description": "Transaction category",
+          "enum": ["deduct", "refund", "purchase", "bonus"]
+        },
+        "reason": {
+          "type": "string",
+          "description": "Arabic description of the transaction",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "jobId": {
+          "type": "string",
+          "description": "Associated job ID or none",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Transaction timestamp"
+        }
+      },
+      "required": ["ownerId", "amount", "type", "reason", "jobId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles and credit balances"
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "User editing projects"
+    },
+    "/projects/{projectId}/versions/{versionId}": {
+      "schema": { "$ref": "#/entities/Version" },
+      "description": "Version history snapshots per project"
+    },
+    "/jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/Job" },
+      "description": "AI processing jobs"
+    },
+    "/credit_transactions/{txId}": {
+      "schema": { "$ref": "#/entities/CreditTransaction" },
+      "description": "Credit ledger entries"
+    }
+  }
+}

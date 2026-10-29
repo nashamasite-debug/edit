@@ -1,0 +1,6 @@
+{
+  "name": "AI Text Editor Studio",
+  "description": "أداة احترافية لتعديل النصوص داخل الصور والإعلانات بالذكاء الاصطناعي مع الحفاظ على الخطوط والتصميم الأصلي.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
