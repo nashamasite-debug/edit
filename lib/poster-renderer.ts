@@ -12,6 +12,7 @@ export interface DetectedTextItem {
   position: string;
   text: string;
   originalText: string;
+  initialText?: string;
   box?: {
     x: number;
     y: number;
@@ -45,6 +46,7 @@ export async function renderUploadedImageWithTextEdits(
   options?: {
     enhanced?: boolean;
     customBgColor?: string | null;
+    forceRenderModified?: boolean;
   }
 ): Promise<string> {
   return new Promise((resolve) => {
@@ -75,46 +77,78 @@ export async function renderUploadedImageWithTextEdits(
       const erasedSet = new Set(erasedIds);
 
       texts.forEach((item, index) => {
-        const isModified = item.text !== item.originalText;
+        const baseText = item.initialText ?? item.originalText;
+        const isModified =
+          item.text.trim() !== baseText.trim() ||
+          item.text.trim() !== item.originalText.trim();
         const isErased = erasedSet.has(item.id);
-        if (!isModified && !isErased) return;
+        if (!isModified && !isErased && !options?.forceRenderModified) return;
 
-        // Infer region from position string if no explicit box
+        // Infer fallback region from position string if no explicit box
         const pos = item.position.toLowerCase();
-        let yPct = 14 + index * 15;
-        if (pos.includes('top')) yPct = 10 + index * 10;
-        else if (pos.includes('bottom')) yPct = 76 + (index % 2) * 10;
+        let fallbackY = 14 + index * 15;
+        if (pos.includes('top')) fallbackY = 10 + index * 10;
+        else if (pos.includes('bottom')) fallbackY = 74 + (index % 2) * 10;
         else if (pos.includes('center') || pos.includes('middle'))
-          yPct = 42 + (index % 2) * 12;
+          fallbackY = 40 + (index % 2) * 12;
 
-        let xPct = 12;
-        let widthPct = 76;
+        let fallbackX = 12;
+        let fallbackW = 76;
         if (pos.includes('right')) {
-          xPct = 36;
-          widthPct = 56;
+          fallbackX = 34;
+          fallbackW = 58;
         } else if (pos.includes('left')) {
-          xPct = 8;
-          widthPct = 56;
+          fallbackX = 8;
+          fallbackW = 58;
         }
 
-        const box = item.box || {
-          x: xPct,
-          y: yPct,
-          width: widthPct,
-          height: 9,
-        };
+        let normX = fallbackX;
+        let normY = fallbackY;
+        let normW = fallbackW;
+        let normH = 12;
 
-        const bx = (box.x / 100) * W;
-        const by = (box.y / 100) * H;
-        const bw = (box.width / 100) * W;
-        const bh = (box.height / 100) * H;
+        if (item.box) {
+          const maxRaw = Math.max(
+            item.box.x,
+            item.box.y,
+            item.box.width,
+            item.box.height
+          );
+          const scaleDiv = maxRaw > 100 ? 10 : maxRaw <= 1 ? 0.01 : 1;
+          normX = item.box.x / scaleDiv;
+          normY = item.box.y / scaleDiv;
+          normW = item.box.width / scaleDiv;
+          normH = item.box.height / scaleDiv;
 
-        // Sample multiple surrounding border pixels for accurate background patch
+          // Guard against legacy clamped 95% values
+          if (normX >= 92 && normW >= 50) {
+            normX = fallbackX;
+            normW = fallbackW;
+          }
+          if (normY >= 92 && normH >= 25) {
+            normY = fallbackY;
+            normH = 14;
+          }
+        }
+
+        normX = Math.max(1, Math.min(92, normX));
+        normY = Math.max(1, Math.min(92, normY));
+        normW = Math.max(8, Math.min(98 - normX, normW));
+        normH = Math.max(5, Math.min(98 - normY, normH));
+
+        const bx = (normX / 100) * W;
+        const by = (normY / 100) * H;
+        const bw = (normW / 100) * W;
+        const bh = (normH / 100) * H;
+
+        // Sample surrounding border pixels for seamless background patch
         const samplePoints = [
-          [Math.max(0, bx - 3), Math.max(0, by + bh / 2)],
-          [Math.min(W - 1, bx + bw + 3), Math.max(0, by + bh / 2)],
-          [Math.max(0, bx + bw / 2), Math.max(0, by - 3)],
-          [Math.max(0, bx + bw / 2), Math.min(H - 1, by + bh + 3)],
+          [Math.max(1, bx - 4), Math.max(1, by + bh * 0.25)],
+          [Math.max(1, bx - 4), Math.max(1, by + bh * 0.75)],
+          [Math.min(W - 2, bx + bw + 4), Math.max(1, by + bh * 0.25)],
+          [Math.min(W - 2, bx + bw + 4), Math.max(1, by + bh * 0.75)],
+          [Math.max(1, bx + bw * 0.5), Math.max(1, by - 4)],
+          [Math.max(1, bx + bw * 0.5), Math.min(H - 2, by + bh + 4)],
         ];
         let rSum = 0,
           gSum = 0,
@@ -133,36 +167,94 @@ export async function renderUploadedImageWithTextEdits(
         const rAvg = Math.round(rSum / samplePoints.length);
         const gAvg = Math.round(gSum / samplePoints.length);
         const bAvg = Math.round(bSum / samplePoints.length);
-        const bgFill = box.bgColor || `rgb(${rAvg}, ${gAvg}, ${bAvg})`;
+        const bgFill = item.box?.bgColor || `rgb(${rAvg}, ${gAvg}, ${bAvg})`;
         const luminance = (0.299 * rAvg + 0.587 * gAvg + 0.114 * bAvg) / 255;
         const fgColor =
-          box.color || (luminance > 0.55 ? '#0F172A' : '#FFFFFF');
+          item.box?.color || (luminance > 0.55 ? '#0F172A' : '#FFFFFF');
+
+        const padX = Math.max(6, Math.round(W * 0.008));
+        const padY = Math.max(4, Math.round(H * 0.006));
 
         ctx.save();
         ctx.fillStyle = bgFill;
         ctx.beginPath();
-        ctx.roundRect(bx - 4, by - 3, bw + 8, bh + 6, 8);
+        ctx.roundRect(
+          Math.max(0, bx - padX),
+          Math.max(0, by - padY),
+          Math.min(W, bw + padX * 2),
+          Math.min(H, bh + padY * 2),
+          8
+        );
         ctx.fill();
 
         if (!isErased && item.text.trim()) {
           ctx.direction = 'rtl';
-          const fitSizeByHeight = Math.round(bh * 0.68);
-          const defaultSize = Math.round(
-            W * (item.label === 'headline' ? 0.042 : 0.026)
-          );
-          const fontSize = Math.max(
-            14,
-            Math.min(fitSizeByHeight || defaultSize, Math.round(W * 0.08))
-          );
-          ctx.font = `700 ${fontSize}px Cairo, "IBM Plex Sans Arabic", sans-serif`;
           ctx.fillStyle = fgColor;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
+
+          const rawLines = item.text
+            .trim()
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean);
+
+          const maxTextWidth = Math.max(40, bw - padX);
+          let fontSize = Math.max(
+            14,
+            Math.min(
+              Math.round((bh / Math.max(1, rawLines.length)) * 0.65),
+              Math.round(W * 0.075)
+            )
+          );
+
+          // Wrap lines if needed and auto-shrink font to fit bounding box
+          let wrappedLines: string[] = [];
+          for (let attempt = 0; attempt < 6; attempt++) {
+            ctx.font = `700 ${fontSize}px Cairo, "IBM Plex Sans Arabic", sans-serif`;
+            wrappedLines = [];
+            for (const line of rawLines) {
+              if (ctx.measureText(line).width <= maxTextWidth) {
+                wrappedLines.push(line);
+              } else {
+                const words = line.split(/\s+/);
+                let currentLine = '';
+                for (const word of words) {
+                  const testLine = currentLine ? `${currentLine} ${word}` : word;
+                  if (ctx.measureText(testLine).width <= maxTextWidth) {
+                    currentLine = testLine;
+                  } else {
+                    if (currentLine) wrappedLines.push(currentLine);
+                    currentLine = word;
+                  }
+                }
+                if (currentLine) wrappedLines.push(currentLine);
+              }
+            }
+            const totalHeight = wrappedLines.length * (fontSize * 1.28);
+            if (totalHeight <= bh * 1.15 || fontSize <= 14) {
+              break;
+            }
+            fontSize = Math.max(14, Math.floor(fontSize * 0.85));
+          }
+
           if (options?.enhanced) {
             ctx.shadowColor = 'rgba(0,0,0,0.28)';
             ctx.shadowBlur = 6;
           }
-          ctx.fillText(item.text, bx + bw / 2, by + bh / 2, Math.max(40, bw - 8));
+
+          const lineHeight = fontSize * 1.28;
+          const totalBlockH = wrappedLines.length * lineHeight;
+          const startY = by + bh / 2 - totalBlockH / 2 + lineHeight / 2;
+
+          wrappedLines.forEach((lineStr, lineIdx) => {
+            ctx.fillText(
+              lineStr,
+              bx + bw / 2,
+              startY + lineIdx * lineHeight,
+              maxTextWidth
+            );
+          });
         }
         ctx.restore();
       });

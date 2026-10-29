@@ -155,6 +155,7 @@ export default function StudioApp() {
   const [lastAppliedReplacements, setLastAppliedReplacements] = useState<
     TextReplacementSpec[]
   >([]);
+  const [autoDownloadOnEdit, setAutoDownloadOnEdit] = useState<boolean>(false);
 
   // Other AI tools & Adjustments
   const [erasedTextIds, setErasedTextIds] = useState<number[]>([]);
@@ -540,6 +541,7 @@ export default function StudioApp() {
           position: item.position || 'center',
           text: item.text || '',
           originalText: item.text || '',
+          initialText: item.text || '',
           box: item.box,
         })
       );
@@ -600,6 +602,7 @@ export default function StudioApp() {
         textsSnapshot: updatedTexts.map((t) => ({
           ...t,
           originalText: t.text,
+          initialText: t.initialText ?? t.originalText,
         })),
       };
 
@@ -614,6 +617,7 @@ export default function StudioApp() {
         updatedTexts.map((t) => ({
           ...t,
           originalText: t.text,
+          initialText: t.initialText ?? t.originalText,
         }))
       );
 
@@ -826,6 +830,12 @@ export default function StudioApp() {
                 detectedTexts
               );
 
+              if (autoDownloadOnEdit) {
+                setTimeout(() => {
+                  handleDownloadPng(finalImageUrl);
+                }, 250);
+              }
+
               if (user) {
                 try {
                   await updateDoc(doc(db, 'jobs', jobId), {
@@ -857,10 +867,10 @@ export default function StudioApp() {
       setIsEditingModalOpen(false);
       showToast(
         isRetryRun
-          ? 'تمت إعادة توليد الخط العربي بنجاح بدون خصم أي رصيد إضافي!'
+          ? 'تمت إعادة توليد الخط العربي بنجاح! يمكنك تنزيل الصورة الآن.'
           : workspaceMode === 'batch'
           ? `تم تطبيق التعديلات على دفعة الصور (${batchItems.length} صور) بنجاح!`
-          : 'تم تحديث النص في الصورة بنجاح مع الحفاظ على التصميم الأصلي!',
+          : 'تم تحديث النص في الصورة بنجاح! اضغط على «تنزيل الصورة المعدّلة» لحفظها.',
         'success'
       );
     } catch (error) {
@@ -882,35 +892,81 @@ export default function StudioApp() {
     }
   };
 
-  // Download High-Res PNG
-  const handleDownloadPng = () => {
-    if (!activeDisplayUrl) {
-      showToast('يرجى رفع صورة أولاً لتنزيلها.', 'info');
-      return;
-    }
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth || 900;
-      canvas.height = img.naturalHeight || 1200;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+  // Download High-Res PNG (always guarantees edited texts are composited)
+  const handleDownloadPng = useCallback(
+    async (overrideUrl?: string | React.MouseEvent) => {
+      let targetUrl =
+        typeof overrideUrl === 'string' && overrideUrl
+          ? overrideUrl
+          : activeDisplayUrl;
 
-      ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      if (!targetUrl) {
+        showToast('يرجى رفع صورة أولاً لتنزيلها.', 'info');
+        return;
+      }
 
-      const pngUrl = canvas.toDataURL('image/png', 1.0);
-      const link = document.createElement('a');
-      link.download = `ai-text-studio-${Date.now()}.png`;
-      link.href = pngUrl;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast('تم تنزيل الصورة بصيغة PNG بأعلى جودة', 'success');
-    };
-    img.src = activeDisplayUrl;
-  };
+      // If user has any edited text (applied or pending in textareas), ensure it is rendered onto the image before downloading
+      const hasAnyTextEdits = detectedTexts.some(
+        (t) => t.text.trim() !== (t.initialText ?? t.originalText).trim()
+      );
+      if (
+        typeof overrideUrl !== 'string' &&
+        (hasAnyTextEdits ||
+          erasedTextIds.length > 0 ||
+          isEnhanced ||
+          customBgColor)
+      ) {
+        const baseImg = customUploadedBaseUrl || targetUrl;
+        targetUrl = await renderUploadedImageWithTextEdits(
+          baseImg,
+          detectedTexts,
+          erasedTextIds,
+          {
+            enhanced: isEnhanced,
+            customBgColor,
+          }
+        );
+      }
+
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || 900;
+        canvas.height = img.naturalHeight || 1200;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const pngUrl = canvas.toDataURL('image/png', 1.0);
+        const link = document.createElement('a');
+        link.download = `ai-text-studio-edited-${Date.now()}.png`;
+        link.href = pngUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showToast(
+          'تم تنزيل وتحميل الصورة المعدّلة بصيغة PNG بأعلى جودة',
+          'success'
+        );
+      };
+      img.src = targetUrl;
+    },
+    [
+      activeDisplayUrl,
+      brightness,
+      contrast,
+      customBgColor,
+      customUploadedBaseUrl,
+      detectedTexts,
+      erasedTextIds,
+      isEnhanced,
+      saturation,
+      showToast,
+    ]
+  );
 
   // Magic Eraser on a specific text block
   const handleToggleEraseText = async (id: number) => {
@@ -1720,6 +1776,18 @@ export default function StudioApp() {
                             </select>
                           </div>
 
+                          <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none py-0.5">
+                            <input
+                              type="checkbox"
+                              checked={autoDownloadOnEdit}
+                              onChange={(e) =>
+                                setAutoDownloadOnEdit(e.target.checked)
+                              }
+                              className="w-4 h-4 rounded accent-[#8B7CF6] cursor-pointer"
+                            />
+                            <span>تنزيل وتحميل الصورة تلقائياً فور تطبيق التعديلات</span>
+                          </label>
+
                           <button
                             onClick={() => handleApplyTextEdits(false)}
                             disabled={modifiedCount === 0}
@@ -1739,6 +1807,44 @@ export default function StudioApp() {
                               رصيد
                             </span>
                           </button>
+
+                          {/* Direct Download Button after applying edits or at any time */}
+                          {activeDisplayUrl && (
+                            <div
+                              className={`p-3 rounded-xl border transition-all space-y-2 ${
+                                versions.length > 1 ||
+                                lastAppliedReplacements.length > 0
+                                  ? 'bg-emerald-50/90 border-emerald-300'
+                                  : 'bg-white border-slate-200'
+                              }`}
+                            >
+                              {(versions.length > 1 ||
+                                lastAppliedReplacements.length > 0) && (
+                                <div className="flex items-center justify-between text-xs text-emerald-800 font-bold">
+                                  <span className="flex items-center gap-1.5">
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                    الصورة المعدّلة جاهزة للتحميل!
+                                  </span>
+                                  <span className="text-[11px] font-normal text-emerald-700">
+                                    جودة أصلية PNG
+                                  </span>
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadPng()}
+                                className="w-full h-11 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
+                              >
+                                <Download className="w-4 h-4" />
+                                <span>
+                                  {versions.length > 1 ||
+                                  lastAppliedReplacements.length > 0
+                                    ? 'تنزيل وتحميل الصورة المعدّلة (PNG)'
+                                    : 'تنزيل وتحميل الصورة الحالية (PNG)'}
+                                </span>
+                              </button>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ) : (
