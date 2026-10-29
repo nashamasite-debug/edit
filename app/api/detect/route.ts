@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
                 },
               },
               {
-                text: 'Analyze this image and extract all visible text blocks (Arabic and English). Return a JSON array where each item has: id (integer), label ("headline"|"subtitle"|"phone"|"body"|"logo_text"|"badge"), position ("top right"|"top center"|"top left"|"center"|"bottom center"|"bottom right"|"bottom left"), text (exact visible text), box_2d ([ymin, xmin, ymax, xmax] as integers from 0 to 1000 representing the exact bounding box of the text block), textColor (hex color of the text e.g. "#FFFFFF"), and bgColor (hex color of the background behind the text e.g. "#1E293B").',
+                text: 'Analyze this image and extract all visible text blocks (Arabic and English). For each text block, carefully inspect its visual typography and return: id (integer), label ("headline"|"subtitle"|"phone"|"body"|"logo_text"|"badge"), position ("top right"|"top center"|"top left"|"center"|"bottom center"|"bottom right"|"bottom left"), text (exact visible text), box_2d ([ymin, xmin, ymax, xmax] as integers from 0 to 1000 representing the tight bounding box around the text glyphs), textColor (exact hex color of the text glyphs e.g. "#FFFFFF"), fontStyle (choose the closest visual match: "times_new_roman" for Times New Roman or classic serif/traditional Arabic/English typography, "kufi" for geometric square Kufi fonts, "naskh_serif" for Amiri/Naskh fonts, "ruqaa_calligraphy" for calligraphic/diwani script, "heavy_display" for thick poster headlines, "rounded_modern" for soft rounded advertising sans like Tajawal, "corporate_clean" for clean corporate sans like Almarai, or "geometric_sans" for modern Cairo sans), fontWeight ("300"|"400"|"500"|"600"|"700"|"800"|"900"), align ("right"|"center"|"left"), hasShadow (boolean true if text has drop shadow), and strokeColor (hex string if text has an outline/stroke, else empty string).',
               },
             ],
           },
@@ -115,19 +115,43 @@ export async function POST(req: NextRequest) {
                     type: Type.ARRAY,
                     items: { type: Type.INTEGER },
                     description:
-                      'Bounding box [ymin, xmin, ymax, xmax] normalized from 0 to 1000',
+                      'Tight bounding box [ymin, xmin, ymax, xmax] normalized from 0 to 1000',
                   },
                   textColor: {
                     type: Type.STRING,
-                    description: 'Hex color of the text e.g. #FFFFFF',
+                    description: 'Exact hex color of the text e.g. #FFFFFF',
                   },
-                  bgColor: {
+                  fontStyle: {
                     type: Type.STRING,
                     description:
-                      'Hex color of the background behind the text e.g. #1E293B',
+                      'One of: times_new_roman, kufi, naskh_serif, ruqaa_calligraphy, heavy_display, rounded_modern, corporate_clean, geometric_sans',
+                  },
+                  fontWeight: {
+                    type: Type.STRING,
+                    description: 'One of: 300, 400, 500, 600, 700, 800, 900',
+                  },
+                  align: {
+                    type: Type.STRING,
+                    description: 'One of: right, center, left',
+                  },
+                  hasShadow: {
+                    type: Type.BOOLEAN,
+                    description: 'True if text has a visible drop shadow',
+                  },
+                  strokeColor: {
+                    type: Type.STRING,
+                    description: 'Hex outline color if text is stroked, else empty',
                   },
                 },
-                required: ['id', 'label', 'position', 'text', 'box_2d'],
+                required: [
+                  'id',
+                  'label',
+                  'position',
+                  'text',
+                  'box_2d',
+                  'fontStyle',
+                  'fontWeight',
+                ],
               },
             },
           },
@@ -153,7 +177,11 @@ export async function POST(req: NextRequest) {
                     width: number;
                     height: number;
                     color?: string;
-                    bgColor?: string;
+                    fontStyle?: string;
+                    fontWeight?: string;
+                    align?: 'center' | 'right' | 'left';
+                    hasShadow?: boolean;
+                    strokeColor?: string;
                   }
                 | undefined = undefined;
 
@@ -163,18 +191,17 @@ export async function POST(req: NextRequest) {
                 const rawYmax = Number(item.box_2d[2]) || 0;
                 const rawXmax = Number(item.box_2d[3]) || 0;
 
-                // Determine if model returned 0..1000 or 0..100 or 0..1
                 const maxCoord = Math.max(rawYmin, rawXmin, rawYmax, rawXmax);
                 const divisor = maxCoord > 100 ? 10 : maxCoord <= 1 ? 0.01 : 1;
 
                 const yPct = Math.max(0, Math.min(96, rawYmin / divisor));
                 const xPct = Math.max(0, Math.min(96, rawXmin / divisor));
                 const hPct = Math.max(
-                  3,
+                  2.5,
                   Math.min(100 - yPct, (rawYmax - rawYmin) / divisor)
                 );
                 const wPct = Math.max(
-                  6,
+                  4,
                   Math.min(100 - xPct, (rawXmax - rawXmin) / divisor)
                 );
 
@@ -188,10 +215,25 @@ export async function POST(req: NextRequest) {
                     item.textColor.startsWith('#')
                       ? item.textColor
                       : undefined,
-                  bgColor:
-                    typeof item.bgColor === 'string' &&
-                    item.bgColor.startsWith('#')
-                      ? item.bgColor
+                  fontStyle:
+                    typeof item.fontStyle === 'string'
+                      ? item.fontStyle
+                      : 'times_new_roman',
+                  fontWeight:
+                    typeof item.fontWeight === 'string'
+                      ? item.fontWeight
+                      : '700',
+                  align:
+                    item.align === 'right' ||
+                    item.align === 'left' ||
+                    item.align === 'center'
+                      ? item.align
+                      : 'center',
+                  hasShadow: Boolean(item.hasShadow),
+                  strokeColor:
+                    typeof item.strokeColor === 'string' &&
+                    item.strokeColor.startsWith('#')
+                      ? item.strokeColor
                       : undefined,
                 };
               }

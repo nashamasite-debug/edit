@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import Link from 'next/link';
 import {
   Download,
   Plus,
@@ -32,6 +33,8 @@ import {
   Upload,
   Eye,
   Trash2,
+  Settings,
+  Check,
 } from 'lucide-react';
 import {
   signInWithPopup,
@@ -62,10 +65,21 @@ import {
 } from '@/lib/firebase';
 import {
   DetectedTextItem,
+  FONT_STYLE_OPTIONS,
+  FONT_WEIGHT_OPTIONS,
+  FontStyleType,
   renderUploadedImageWithTextEdits,
   TextLabelType,
 } from '@/lib/poster-renderer';
 import { buildEditPrompt, TextReplacementSpec } from '@/lib/job-store';
+import {
+  DEFAULT_SITE_ADMIN_CONFIG,
+  EditModelId,
+  loadLocalSiteConfig,
+  mergeSiteAdminConfig,
+  SiteAdminConfig,
+} from '@/lib/ai-models-config';
+import { ModelProviderBadge } from '@/components/AdminDashboard';
 
 interface VersionEntry {
   id: string;
@@ -96,9 +110,14 @@ interface BatchItem {
 
 type BottomTabId = 'create' | 'ai_tools' | 'background' | 'adjust' | 'effects';
 type ActiveAiToolId = 'text_editor' | 'editable' | 'magic_eraser' | 'enhance';
-type EditModelOption = 'Gemini Image' | 'Flux Kontext' | 'gpt-image';
 
 export default function StudioApp() {
+  // Admin Site Config State
+  const [siteConfig, setSiteConfig] = useState<SiteAdminConfig>(
+    DEFAULT_SITE_ADMIN_CONFIG
+  );
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState<boolean>(false);
+
   // Auth & User Credits
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [credits, setCredits] = useState<number>(15);
@@ -148,7 +167,7 @@ export default function StudioApp() {
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [detectedTexts, setDetectedTexts] = useState<DetectedTextItem[]>([]);
   const [selectedModel, setSelectedModel] =
-    useState<EditModelOption>('Gemini Image');
+    useState<EditModelId>('GPT Image 2.5');
   const [isEditingModalOpen, setIsEditingModalOpen] = useState<boolean>(false);
   const [activeJobStatus, setActiveJobStatus] = useState<string>('');
   const [activeJobPrompt, setActiveJobPrompt] = useState<string>('');
@@ -167,6 +186,27 @@ export default function StudioApp() {
   const [activeEffect, setActiveEffect] = useState<
     'none' | 'studio' | 'warm' | 'crisp'
   >('none');
+  const [hoveredEffect, setHoveredEffect] = useState<
+    'none' | 'studio' | 'warm' | 'crisp' | null
+  >(null);
+
+  const effectiveEffect = hoveredEffect ?? activeEffect;
+  const getEffectCssFilter = useCallback(
+    (eff: 'none' | 'studio' | 'warm' | 'crisp') => {
+      switch (eff) {
+        case 'studio':
+          return 'brightness(106%) contrast(104%) saturate(110%)';
+        case 'warm':
+          return 'sepia(24%) saturate(118%) brightness(103%)';
+        case 'crisp':
+          return 'contrast(118%) saturate(110%) brightness(102%)';
+        case 'none':
+        default:
+          return '';
+      }
+    },
+    []
+  );
 
   // Drawers & Modals
   const [isSideDrawerOpen, setIsSideDrawerOpen] = useState<boolean>(false);
@@ -190,9 +230,51 @@ export default function StudioApp() {
     []
   );
 
-  // Test Firestore connection on mount
+  // Test Firestore connection on mount & sync Admin Site Config
   useEffect(() => {
     void testFirestoreConnection();
+
+    const syncAdminConfig = async () => {
+      const localCfg = loadLocalSiteConfig();
+      setSiteConfig(localCfg);
+      setSelectedModel(localCfg.models.defaultModelId);
+
+      const customCreds = window.localStorage.getItem(
+        'ai_text_studio_custom_credits'
+      );
+      if (customCreds && !Number.isNaN(Number(customCreds))) {
+        setCredits(Number(customCreds));
+      } else {
+        setCredits(localCfg.billing.welcomeCredits);
+      }
+
+      try {
+        const res = await fetch('/api/admin/settings');
+        if (res.ok) {
+          const data = await res.json();
+          const merged = mergeSiteAdminConfig(localCfg || data.config);
+          setSiteConfig(merged);
+        }
+      } catch {
+        // Ignore offline fetch error
+      }
+    };
+
+    void syncAdminConfig();
+    const handleStorageSync = () => {
+      const nextCfg = loadLocalSiteConfig();
+      setSiteConfig(nextCfg);
+      const customCreds = window.localStorage.getItem(
+        'ai_text_studio_custom_credits'
+      );
+      if (customCreds && !Number.isNaN(Number(customCreds))) {
+        setCredits(Number(customCreds));
+      }
+    };
+    window.addEventListener('site-admin-config-updated', handleStorageSync);
+    return () => {
+      window.removeEventListener('site-admin-config-updated', handleStorageSync);
+    };
   }, []);
 
   // Listen to Firebase Auth state and sync user profile + credits in Firestore
@@ -683,7 +765,11 @@ export default function StudioApp() {
 
     const batchCount =
       workspaceMode === 'batch' ? Math.max(1, batchItems.length) : 1;
-    const requiredCost = isRetryRun ? 0 : batchCount;
+    const activeModelSpec =
+      siteConfig.models.items.find((m) => m.id === selectedModel) ||
+      siteConfig.models.items[0];
+    const unitCost = activeModelSpec ? activeModelSpec.creditCost : 1;
+    const requiredCost = isRetryRun ? 0 : batchCount * unitCost;
 
     const constructedPrompt = buildEditPrompt(modifiedReplacements);
     setActiveJobPrompt(constructedPrompt);
@@ -713,10 +799,7 @@ export default function StudioApp() {
           imageBase64: optimizedEditBase64,
           mimeType: optimizedEditMime,
           replacements: modifiedReplacements,
-          model:
-            selectedModel === 'Gemini Image'
-              ? 'gemini-3.1-flash-lite-image'
-              : selectedModel,
+          model: selectedModel,
           isRetry: isRetryRun,
           batchCount,
         }),
@@ -937,7 +1020,8 @@ export default function StudioApp() {
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
+        const effectFilter = getEffectCssFilter(activeEffect);
+        ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) ${effectFilter}`.trim();
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
         const pngUrl = canvas.toDataURL('image/png', 1.0);
@@ -956,12 +1040,14 @@ export default function StudioApp() {
     },
     [
       activeDisplayUrl,
+      activeEffect,
       brightness,
       contrast,
       customBgColor,
       customUploadedBaseUrl,
       detectedTexts,
       erasedTextIds,
+      getEffectCssFilter,
       isEnhanced,
       saturation,
       showToast,
@@ -1203,8 +1289,17 @@ export default function StudioApp() {
           </button>
         </div>
 
-        {/* Left Cluster (in RTL): Credits Trigger + Purple Download Button */}
+        {/* Left Cluster (in RTL): Admin Panel Link + Credits Trigger + Purple Download Button */}
         <div className="flex items-center gap-2 shrink-0">
+          <Link
+            href="/admin"
+            className="h-10 px-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 hover:text-[#8B7CF6] text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            title="لوحة تحكم الإدارة وإعدادات نماذج الذكاء الاصطناعي (/admin)"
+          >
+            <Settings className="w-4 h-4 text-[#8B7CF6]" />
+            <span className="hidden md:inline">لوحة الأدمن</span>
+          </Link>
+
           <button
             onClick={() => setIsStripeModalOpen(true)}
             className="hidden sm:flex items-center gap-1.5 h-10 px-3 rounded-xl bg-slate-100 hover:bg-slate-200/70 text-slate-800 text-xs font-bold transition-colors tabular-nums cursor-pointer"
@@ -1300,17 +1395,20 @@ export default function StudioApp() {
                   src={activeDisplayUrl}
                   alt="معاينة الصورة"
                   referrerPolicy="no-referrer"
-                  className="w-full h-auto max-h-[65vh] object-contain block select-none"
+                  className="w-full h-auto max-h-[65vh] object-contain block select-none transition-[filter] duration-200"
                   style={{
-                    filter: `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) ${
-                      activeEffect === 'warm'
-                        ? 'sepia(18%)'
-                        : activeEffect === 'crisp'
-                        ? 'contrast(112%)'
-                        : ''
-                    }`,
+                    filter: `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) ${getEffectCssFilter(
+                      effectiveEffect
+                    )}`.trim(),
                   }}
                 />
+
+                {hoveredEffect && hoveredEffect !== activeEffect && (
+                  <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-[#8B7CF6]/90 text-white text-[11px] font-bold shadow-md backdrop-blur-xs pointer-events-none flex items-center gap-1.5">
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>معاينة حية للتأثير</span>
+                  </div>
+                )}
 
                 {/* Before/After Comparison Slider Overlay */}
                 {isCompareMode && beforeCompareUrl && (
@@ -1682,16 +1780,56 @@ export default function StudioApp() {
 
                     {hasDetected && detectedTexts.length > 0 ? (
                       <div className="space-y-3 pt-1">
-                        <div className="flex items-center justify-between text-xs text-slate-500">
+                        <div className="flex items-center justify-between gap-2 flex-wrap text-xs text-slate-500">
                           <span>النصوص المكتشفة ({detectedTexts.length})</span>
-                          <span>عدّل أي نص ثم اضغط تطبيق التعديلات</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDetectedTexts((prev) =>
+                                prev.map((t) => ({
+                                  ...t,
+                                  box: {
+                                    ...(t.box || {
+                                      x: 12,
+                                      y: 20,
+                                      width: 76,
+                                      height: 12,
+                                    }),
+                                    fontStyle: 'times_new_roman',
+                                  },
+                                }))
+                              );
+                              showToast(
+                                'تم ضبط خط تايمز نيو رومان (Times New Roman) لجميع النصوص',
+                                'info'
+                              );
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-[#8B7CF6]/10 hover:bg-[#8B7CF6]/20 text-[#8B7CF6] font-bold text-[11px] transition-colors cursor-pointer"
+                          >
+                            توحيد الخط إلى Times New Roman
+                          </button>
                         </div>
 
                         <div className="space-y-2.5">
                           {detectedTexts.map((item) => {
                             const isChanged =
-                              item.text.trim() !== item.originalText.trim();
+                              item.text.trim() !==
+                              (item.initialText ?? item.originalText).trim();
                             const isFocused = focusedTextId === item.id;
+                            const currentFontKey = (
+                              item.box?.fontStyle &&
+                              item.box.fontStyle in FONT_STYLE_OPTIONS
+                                ? item.box.fontStyle
+                                : 'times_new_roman'
+                            ) as FontStyleType;
+                            const currentFontSpec =
+                              FONT_STYLE_OPTIONS[currentFontKey];
+                            const currentWeight =
+                              item.box?.fontWeight ||
+                              currentFontSpec.defaultWeight ||
+                              '700';
+                            const currentItalic = Boolean(item.box?.fontItalic);
+
                             return (
                               <div
                                 key={item.id}
@@ -1704,7 +1842,7 @@ export default function StudioApp() {
                                     : 'border-slate-200'
                                 }`}
                               >
-                                <div className="flex items-center justify-between gap-2 text-xs">
+                                <div className="flex items-center justify-between gap-2 text-xs flex-wrap">
                                   <div className="flex items-center gap-2">
                                     <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-mono text-[11px] font-semibold">
                                       {item.label}
@@ -1712,6 +1850,12 @@ export default function StudioApp() {
                                     <span className="text-slate-400">·</span>
                                     <span className="text-slate-500 font-mono text-[11px]">
                                       {item.position}
+                                    </span>
+                                    <span
+                                      className="px-1.5 py-0.5 rounded bg-[#8B7CF6]/10 text-[#8B7CF6] text-[10px] font-bold"
+                                      title="يتم مسح النص الأصلي بدمج الخلفية تلقائياً بدون أي إطار أو لون مصمت"
+                                    >
+                                      خلفية شفافة مدمجة
                                     </span>
                                   </div>
 
@@ -1723,7 +1867,12 @@ export default function StudioApp() {
                                         setDetectedTexts((prev) =>
                                           prev.map((t) =>
                                             t.id === item.id
-                                              ? { ...t, text: t.originalText }
+                                              ? {
+                                                  ...t,
+                                                  text:
+                                                    t.initialText ??
+                                                    t.originalText,
+                                                }
                                               : t
                                           )
                                         );
@@ -1733,6 +1882,126 @@ export default function StudioApp() {
                                       استعادة الأصلي
                                     </button>
                                   )}
+                                </div>
+
+                                {/* Recognized Font Family + All Font Weights (300 - 900 + Italic) */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200/70">
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <span className="text-[11px] text-slate-600 font-semibold shrink-0">
+                                      نوع الخط:
+                                    </span>
+                                    <select
+                                      value={currentFontKey}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={(e) => {
+                                        const nextStyle = e.target
+                                          .value as FontStyleType;
+                                        setDetectedTexts((prev) =>
+                                          prev.map((t) =>
+                                            t.id === item.id
+                                              ? {
+                                                  ...t,
+                                                  box: {
+                                                    ...(t.box || {
+                                                      x: 12,
+                                                      y: 20,
+                                                      width: 76,
+                                                      height: 12,
+                                                    }),
+                                                    fontStyle: nextStyle,
+                                                  },
+                                                }
+                                              : t
+                                          )
+                                        );
+                                      }}
+                                      className="flex-1 text-[11px] font-bold text-slate-800 bg-white border border-slate-200 rounded-md px-2 py-1 focus:border-[#8B7CF6] focus:outline-none truncate"
+                                    >
+                                      {(
+                                        Object.keys(
+                                          FONT_STYLE_OPTIONS
+                                        ) as FontStyleType[]
+                                      ).map((fk) => (
+                                        <option key={fk} value={fk}>
+                                          {FONT_STYLE_OPTIONS[fk].label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <span className="text-[11px] text-slate-600 font-semibold shrink-0">
+                                      الوزن:
+                                    </span>
+                                    <select
+                                      value={currentWeight}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={(e) => {
+                                        const nextWeight = e.target.value;
+                                        setDetectedTexts((prev) =>
+                                          prev.map((t) =>
+                                            t.id === item.id
+                                              ? {
+                                                  ...t,
+                                                  box: {
+                                                    ...(t.box || {
+                                                      x: 12,
+                                                      y: 20,
+                                                      width: 76,
+                                                      height: 12,
+                                                    }),
+                                                    fontWeight: nextWeight,
+                                                  },
+                                                }
+                                              : t
+                                          )
+                                        );
+                                      }}
+                                      className="flex-1 text-[11px] font-bold text-slate-800 bg-white border border-slate-200 rounded-md px-2 py-1 focus:border-[#8B7CF6] focus:outline-none truncate"
+                                    >
+                                      {FONT_WEIGHT_OPTIONS.map((wOpt) => (
+                                        <option
+                                          key={wOpt.value}
+                                          value={wOpt.value}
+                                        >
+                                          {wOpt.label}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDetectedTexts((prev) =>
+                                          prev.map((t) =>
+                                            t.id === item.id
+                                              ? {
+                                                  ...t,
+                                                  box: {
+                                                    ...(t.box || {
+                                                      x: 12,
+                                                      y: 20,
+                                                      width: 76,
+                                                      height: 12,
+                                                    }),
+                                                    fontItalic: !currentItalic,
+                                                  },
+                                                }
+                                              : t
+                                          )
+                                        );
+                                      }}
+                                      className={`px-2 py-1 rounded-md border text-[11px] font-serif italic font-bold transition-colors cursor-pointer shrink-0 ${
+                                        currentItalic
+                                          ? 'border-[#8B7CF6] bg-[#8B7CF6] text-white'
+                                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                                      }`}
+                                      title="خط مائل (Italic)"
+                                    >
+                                      I
+                                    </button>
+                                  </div>
                                 </div>
 
                                 <textarea
@@ -1748,7 +2017,14 @@ export default function StudioApp() {
                                       )
                                     );
                                   }}
-                                  className="w-full rounded-lg border border-slate-200 focus:border-[#8B7CF6] focus:outline-none p-2.5 text-sm font-medium text-slate-900 bg-slate-50/50 focus:bg-white resize-none leading-relaxed"
+                                  style={{
+                                    fontFamily: currentFontSpec.cssFamily,
+                                    fontWeight: currentWeight,
+                                    fontStyle: currentItalic
+                                      ? 'italic'
+                                      : 'normal',
+                                  }}
+                                  className="w-full rounded-lg border border-slate-200 focus:border-[#8B7CF6] focus:outline-none p-2.5 text-sm text-slate-900 bg-slate-50/50 focus:bg-white resize-none leading-relaxed"
                                   placeholder="أدخل النص الجديد هنا..."
                                 />
                               </div>
@@ -1757,36 +2033,105 @@ export default function StudioApp() {
                         </div>
 
                         <div className="pt-2 border-t border-slate-200/80 space-y-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <label className="text-xs font-bold text-slate-700 shrink-0">
-                              نموذج التحرير:
-                            </label>
-                            <select
-                              value={selectedModel}
-                              onChange={(e) =>
-                                setSelectedModel(
-                                  e.target.value as EditModelOption
-                                )
+                          {/* Rich 6-Model Selector matching attached image */}
+                          <div className="space-y-1.5 relative">
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-bold text-slate-700">
+                                نموذج تحرير الصور:
+                              </label>
+                              <Link
+                                href="/admin"
+                                className="text-[11px] font-bold text-[#8B7CF6] hover:underline flex items-center gap-1"
+                              >
+                                <Settings className="w-3 h-3" />
+                                <span>إعدادات النماذج والـ API</span>
+                              </Link>
+                            </div>
+
+                            <button
+                              type="button"
+                              dir="ltr"
+                              onClick={() =>
+                                setIsModelMenuOpen((prev) => !prev)
                               }
-                              className="flex-1 h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 focus:border-[#8B7CF6] focus:outline-none"
+                              className="w-full h-11 px-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 flex items-center justify-between transition-colors cursor-pointer"
                             >
-                              <option value="Gemini Image">Gemini Image</option>
-                              <option value="Flux Kontext">Flux Kontext</option>
-                              <option value="gpt-image">gpt-image</option>
-                            </select>
+                              <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" />
+                              <div className="flex items-center gap-2.5">
+                                <span className="text-xs sm:text-sm font-bold text-slate-900">
+                                  {selectedModel}
+                                </span>
+                                <ModelProviderBadge
+                                  provider={
+                                    siteConfig.models.items.find(
+                                      (m) => m.id === selectedModel
+                                    )?.provider || 'gemini'
+                                  }
+                                />
+                              </div>
+                            </button>
+
+                            {isModelMenuOpen && (
+                              <div
+                                dir="ltr"
+                                className="absolute left-0 right-0 bottom-full mb-1.5 z-40 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl space-y-1"
+                              >
+                                {siteConfig.models.items
+                                  .filter((m) => m.enabled)
+                                  .map((modelItem) => {
+                                    const isSelected =
+                                      selectedModel === modelItem.id;
+                                    return (
+                                      <button
+                                        key={modelItem.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedModel(modelItem.id);
+                                          setIsModelMenuOpen(false);
+                                        }}
+                                        className={`w-full px-3.5 py-2.5 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                                          isSelected
+                                            ? 'bg-slate-100 text-slate-900 font-bold'
+                                            : 'hover:bg-slate-50 text-slate-800 font-medium'
+                                        }`}
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          {isSelected ? (
+                                            <Check className="w-4 h-4 text-slate-900 stroke-[2.5]" />
+                                          ) : (
+                                            <span className="w-4 h-4" />
+                                          )}
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                          <span className="text-sm tracking-tight">
+                                            {modelItem.name}
+                                          </span>
+                                          <ModelProviderBadge
+                                            provider={modelItem.provider}
+                                          />
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                              </div>
+                            )}
                           </div>
 
-                          <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none py-0.5">
-                            <input
-                              type="checkbox"
-                              checked={autoDownloadOnEdit}
-                              onChange={(e) =>
-                                setAutoDownloadOnEdit(e.target.checked)
-                              }
-                              className="w-4 h-4 rounded accent-[#8B7CF6] cursor-pointer"
-                            />
-                            <span>تنزيل وتحميل الصورة تلقائياً فور تطبيق التعديلات</span>
-                          </label>
+                          {siteConfig.features.enableAutoDownloadOption && (
+                            <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none py-0.5">
+                              <input
+                                type="checkbox"
+                                checked={autoDownloadOnEdit}
+                                onChange={(e) =>
+                                  setAutoDownloadOnEdit(e.target.checked)
+                                }
+                                className="w-4 h-4 rounded accent-[#8B7CF6] cursor-pointer"
+                              />
+                              <span>
+                                تنزيل وتحميل الصورة تلقائياً فور تطبيق التعديلات
+                              </span>
+                            </label>
+                          )}
 
                           <button
                             onClick={() => handleApplyTextEdits(false)}
@@ -1801,9 +2146,12 @@ export default function StudioApp() {
                                 : ''}
                             </span>
                             <span className="px-2 py-0.5 rounded-md bg-white/20 text-xs tabular-nums">
-                              {workspaceMode === 'batch'
+                              {(workspaceMode === 'batch'
                                 ? Math.max(1, batchItems.length)
-                                : 1}{' '}
+                                : 1) *
+                                (siteConfig.models.items.find(
+                                  (m) => m.id === selectedModel
+                                )?.creditCost ?? 1)}{' '}
                               رصيد
                             </span>
                           </button>
@@ -2146,32 +2494,76 @@ export default function StudioApp() {
             {/* ==================== TAB 5: تأثيرات (Effects) ==================== */}
             {activeBottomTab === 'effects' && (
               <div className="space-y-3">
-                <h3 className="text-sm font-bold text-slate-900">
-                  تأثيرات بصرية جاهزة
-                </h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-slate-900">
+                    تأثيرات بصرية جاهزة
+                  </h3>
+                  <span className="text-[11px] text-slate-500">
+                    مرّر الفأرة للمعاينة الحية أو اضغط للتثبيت
+                  </span>
+                </div>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {[
-                    { id: 'none', label: 'طبيعي (بدون تأثير)' },
-                    { id: 'studio', label: 'إضاءة استوديو ناعمة' },
-                    { id: 'warm', label: 'طابع سينمائي دافئ' },
-                    { id: 'crisp', label: 'تباين طباعي حاد' },
-                  ].map((eff) => (
-                    <button
-                      key={eff.id}
-                      onClick={() =>
-                        setActiveEffect(
-                          eff.id as 'none' | 'studio' | 'warm' | 'crisp'
-                        )
-                      }
-                      className={`p-3 rounded-xl border text-xs font-bold text-right transition-all ${
-                        activeEffect === eff.id
-                          ? 'border-[#8B7CF6] bg-[#8B7CF6]/10 text-[#8B7CF6]'
-                          : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                      }`}
-                    >
-                      {eff.label}
-                    </button>
-                  ))}
+                  {(
+                    [
+                      {
+                        id: 'none',
+                        label: 'طبيعي (بدون تأثير)',
+                        desc: 'الألوان الأصلية للصورة',
+                      },
+                      {
+                        id: 'studio',
+                        label: 'إضاءة استوديو ناعمة',
+                        desc: 'إشراقة وتوازن لوني ناعم',
+                      },
+                      {
+                        id: 'warm',
+                        label: 'طابع سينمائي دافئ',
+                        desc: 'تدرجات دافئة وغنية',
+                      },
+                      {
+                        id: 'crisp',
+                        label: 'تباين طباعي حاد',
+                        desc: 'إبراز النصوص والتفاصيل',
+                      },
+                    ] as const
+                  ).map((eff) => {
+                    const isSelected = activeEffect === eff.id;
+                    const isHovered = hoveredEffect === eff.id;
+                    return (
+                      <button
+                        key={eff.id}
+                        type="button"
+                        onMouseEnter={() => setHoveredEffect(eff.id)}
+                        onMouseLeave={() => setHoveredEffect(null)}
+                        onFocus={() => setHoveredEffect(eff.id)}
+                        onBlur={() => setHoveredEffect(null)}
+                        onClick={() => setActiveEffect(eff.id)}
+                        className={`p-3 rounded-xl border text-right transition-all cursor-pointer space-y-1 ${
+                          isSelected
+                            ? 'border-[#8B7CF6] bg-[#8B7CF6]/10 text-[#8B7CF6] shadow-xs'
+                            : isHovered
+                            ? 'border-[#8B7CF6]/60 bg-[#8B7CF6]/5 text-slate-900'
+                            : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span className="text-xs font-bold">{eff.label}</span>
+                          {isSelected ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#8B7CF6] text-white font-bold">
+                              مفعّل
+                            </span>
+                          ) : isHovered ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-semibold">
+                              معاينة
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="text-[11px] text-slate-500 font-normal">
+                          {eff.desc}
+                        </p>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -2251,10 +2643,10 @@ export default function StudioApp() {
               <div className="flex items-center justify-between border-b border-slate-100 pb-4">
                 <div>
                   <h2 className="text-base font-bold text-slate-900">
-                    AI Text Editor Studio
+                    {siteConfig.general.siteTitle}
                   </h2>
                   <p className="text-xs text-slate-500">
-                    محرر النصوص الذكي داخل الصور
+                    {siteConfig.general.siteSubtitle}
                   </p>
                 </div>
                 <button
@@ -2264,6 +2656,26 @@ export default function StudioApp() {
                   <X className="w-4 h-4" />
                 </button>
               </div>
+
+              {/* Admin Panel Direct Link inside Side Drawer */}
+              <Link
+                href="/admin"
+                onClick={() => setIsSideDrawerOpen(false)}
+                className="w-full p-3.5 rounded-2xl bg-[#8B7CF6]/10 hover:bg-[#8B7CF6]/15 border border-[#8B7CF6]/30 flex items-center justify-between text-[#8B7CF6] transition-colors"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Settings className="w-5 h-5 shrink-0" />
+                  <div>
+                    <div className="text-xs font-extrabold">
+                      لوحة تحكم الإدارة (/admin)
+                    </div>
+                    <div className="text-[11px] text-slate-600">
+                      إدارة النماذج الستة ودليل الـ API وإعدادات الموقع
+                    </div>
+                  </div>
+                </div>
+                <span className="text-xs font-bold">فتح ←</span>
+              </Link>
 
               <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
                 {user ? (
@@ -2423,30 +2835,7 @@ export default function StudioApp() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {[
-                {
-                  id: 'pkg_starter',
-                  title: 'باقة البداية',
-                  credits: 25,
-                  price: '$5',
-                  desc: 'مثالية للتجربة والتصاميم الفردية',
-                },
-                {
-                  id: 'pkg_pro',
-                  title: 'باقة المحترفين',
-                  credits: 100,
-                  price: '$15',
-                  desc: 'الأكثر طلباً لصناع المحتوى والمسوقين',
-                  popular: true,
-                },
-                {
-                  id: 'pkg_agency',
-                  title: 'باقة الوكالات',
-                  credits: 300,
-                  price: '$39',
-                  desc: 'لتعديل الدفعات الكبيرة والحملات الإعلانية',
-                },
-              ].map((pkg) => (
+              {siteConfig.billing.packages.map((pkg) => (
                 <div
                   key={pkg.id}
                   className={`p-4 rounded-2xl border flex flex-col justify-between space-y-4 ${
